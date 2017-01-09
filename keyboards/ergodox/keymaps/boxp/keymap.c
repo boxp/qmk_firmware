@@ -2,6 +2,7 @@
 #include "debug.h"
 #include "action_layer.h"
 #include "version.h"
+#include "mousekey.h"
 
 #define BASE 0 // default layer
 #define SYMB 1 // symbols
@@ -9,6 +10,18 @@
 #define PSO2 3 // for PSO2
 
 #define EPRM M(1) // Macro 1: Reset EEPROM
+
+/* for mouse pointer speed up */
+#define MOUSEKEY_MIN_SPEED 1
+#define MOUSE_KEY_START KC_MS_U
+
+#define FPS 50
+#define UPDATE_INTERVAL 1000 / FPS
+
+uint32_t last_updated_time;
+uint32_t last_mouse_key_pressed;
+uint32_t mouse_key_flags;
+/* end */
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 /* Keymap 0: Basic layer
@@ -202,32 +215,70 @@ const macro_t *action_get_macro(keyrecord_t *record, uint8_t id, uint8_t opt)
     return MACRO_NONE;
 };
 
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+	uint32_t now = timer_read32();
+
+	switch (keycode) {
+	case KC_MS_U ... KC_MS_R:
+		if (record->event.pressed) {
+			// 初回
+			if (mouse_key_flags == 0) {
+				last_mouse_key_pressed = now;
+			}
+			mouse_key_flags     |= 1 << (keycode - MOUSE_KEY_START);
+		} else {
+			mouse_key_flags     &= ~(1 << (keycode - MOUSE_KEY_START));
+			// 終了
+			if (mouse_key_flags == 0) {
+				mk_max_speed        = MOUSEKEY_MAX_SPEED;
+			}
+		}
+		break;
+	}
+
+	return true;
+}
+
 // Runs just one time when the keyboard initializes.
 void matrix_init_user(void) {
+	uint32_t now = timer_read32();
 
+	last_mouse_key_pressed = now;
+	last_updated_time   = now;
+
+	mouse_key_flags     = 0;
+	mk_max_speed        = MOUSEKEY_MAX_SPEED;
+	mk_wheel_max_speed  = 1;
 };
 
+// Runs regularly at FPS
+static void my_update(void) {
+	uint32_t now = timer_read32();
+
+	if (mouse_key_flags != 0) {
+		uint32_t dt = now - last_mouse_key_pressed;
+		float r = dt / (1000 * 1.0f);       // 1000ms * sec
+		r = r * r;
+		if (r > 1.0f) {
+			r = 1.0f;
+		}
+		uint8_t n = (uint8_t)(MOUSEKEY_MAX_SPEED + MOUSEKEY_MIN_SPEED + 8 * r);
+		mk_max_speed        = n;
+	}
+}
 
 // Runs constantly in the background, in a loop.
 void matrix_scan_user(void) {
+	uint32_t t = timer_read32();
 
-    uint8_t layer = biton32(layer_state);
-
-    ergodox_board_led_off();
-    ergodox_right_led_1_off();
-    ergodox_right_led_2_off();
-    ergodox_right_led_3_off();
-    switch (layer) {
-      // TODO: Make this relevant to the ErgoDox EZ.
-        case 1:
-            ergodox_right_led_1_on();
-            break;
-        case 2:
-            ergodox_right_led_2_on();
-            break;
-        default:
-            // none
-            break;
-    }
-
+	if (t < last_updated_time) {
+		// カウンターのオーバーフロー時のごまかし
+		last_updated_time   = t;
+	} else {
+		uint32_t td = t - last_updated_time;
+		if (td >= UPDATE_INTERVAL) {
+			my_update();
+			last_updated_time += UPDATE_INTERVAL;
+		}
+	}
 };
